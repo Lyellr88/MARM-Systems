@@ -72,7 +72,7 @@ dev = [
     "jsonschema>=4.0.0",
     "requests>=2.31.0",
     "mypy==2.1.0",
-    "types-psutil==7.2.2.20260518",
+    "types-psutil==7.2.2.20260827",
     "ruff==0.16.4",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
