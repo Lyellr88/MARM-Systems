@@ -165,7 +165,20 @@ def _product_parser() -> argparse.ArgumentParser:
     key = subparsers.add_parser("key", help="Manage local bearer authentication")
     key_sub = key.add_subparsers(dest="key_command", required=True)
     key_sub.add_parser("generate", help="Generate and display an ephemeral key")
-    key_sub.add_parser("init", help="Create or reuse the managed local key file")
+    key_init = key_sub.add_parser(
+        "init", help="Create or reuse the managed local key file"
+    )
+    key_init.add_argument(
+        "--keychain",
+        action="store_true",
+        help="Also store the managed key in the OS keychain (needs the keychain extra)",
+    )
+    key_init.add_argument(
+        "--remove-plaintext",
+        action="store_true",
+        dest="remove_plaintext",
+        help="With --keychain, delete the .env file once the keychain has the key",
+    )
     key_sub.add_parser("path", help="Print the managed local key-file path")
     key_sub.add_parser("reveal", help="Display the managed local key")
 

@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 
+from ..services import key_management
 from ..services.key_management import _protect_key_file
 from ..utils.security import generate_api_key
 
@@ -17,33 +18,48 @@ def _file_link(path: Path) -> str:
 
 
 def _load_key_from_file() -> str:
-    """Read MARM_API_KEY from ~/.marm/.env if present."""
-    try:
-        for raw_line in _MARM_ENV_PATH.read_text().splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("MARM_API_KEY="):
-                value = line.split("=", 1)[1].strip()
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                    value = value[1:-1]
-                else:
-                    value = value.split("#", 1)[0].strip()
-                return value
-    except Exception:
-        pass
-    return ""
+    """Read MARM_API_KEY from ~/.marm/.env if present.
+
+    Delegates to `key_management` so the server and the CLI cannot drift apart on
+    how the file is parsed; that duplication was the reason a keychain-stored key
+    was invisible to `marm-memory key reveal`.
+    """
+    return key_management.read_managed_key_from_file(_MARM_ENV_PATH)
+
+
+def _load_key_from_keychain() -> str:
+    """Read MARM_API_KEY from the OS keychain, if the user put one there.
+
+    Reads only. Writing happens through the explicit `marm-memory key init
+    --keychain` command instead, because on Linux a `set_password` can raise an
+    unlock prompt and block the module import that reaches this line.
+
+    A keychain that is installed but broken reports why on stderr, so falling
+    through to the plaintext file is never silent. A keychain that was never
+    installed stays quiet: that is a supported configuration, not a fault.
+    """
+    key, problem = key_management.keychain_lookup()
+    if problem:
+        print(
+            f"MARM: cannot use the OS keychain ({problem}); "
+            f"falling back to {_MARM_ENV_PATH}.",
+            file=sys.stderr,
+        )
+    return key
 
 
 def resolve_marm_api_key(server_host: str) -> str:
-    """Resolve MARM_API_KEY: env var, then ~/.marm/.env, then auto-generate
-    and persist one when server_host is 0.0.0.0 and no key was found."""
+    """Resolve MARM_API_KEY: env var, then OS keychain, then ~/.marm/.env, then
+    auto-generate and persist one when server_host is 0.0.0.0 and no key was
+    found anywhere.
+
+    The whole chain stays behind the 0.0.0.0 gate. The default bind is
+    127.0.0.1, where no credential store is consulted and no key is generated.
+    """
     marm_api_key = os.environ.get("MARM_API_KEY", "")
 
     if server_host == "0.0.0.0" and not marm_api_key:
-        file_key = _load_key_from_file()
-        if file_key:
-            marm_api_key = file_key
+        marm_api_key = _load_key_from_keychain() or _load_key_from_file()
 
     is_generate_key_cmd = "--generate-key" in sys.argv or sys.argv[1:3] == [
         "key",
@@ -100,6 +116,12 @@ def resolve_marm_api_key(server_host: str) -> str:
             )
             print()
             print("On subsequent starts the key loads silently from the file above.")
+            if key_management.keychain_installed():
+                print()
+                print(
+                    "To keep the key out of a plaintext file, move it into your OS "
+                    "keychain with: marm-memory key init --keychain"
+                )
         else:
             print("Set MARM_API_KEY explicitly and restart to connect.")
         print()
