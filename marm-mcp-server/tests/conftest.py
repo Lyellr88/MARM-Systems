@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -136,6 +137,116 @@ def isolated_cbm_store(tmp_path_factory):
             os.environ[name] = value
     if sandbox.parent.name == "marm-tests":
         shutil.rmtree(sandbox, ignore_errors=True)
+
+
+_KEY_MANAGEMENT_MODULE = "marm_mcp_server.services.key_management"
+
+
+class MemoryKeychain:
+    """In-process stand-in for the OS keychain.
+
+    A test run must never reach the developer's real credential store. On Windows
+    and macOS a single `keyring.set_password` leaves a permanent `marm-mcp`
+    entry behind, and the round-trip assertions then read back a value the
+    developer never stored. Everything lives in a dict that dies with the test.
+    """
+
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.values.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.values[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        del self.values[(service, username)]
+
+    def get_keyring(self) -> "MemoryKeychain":
+        """Stand in for a resolved backend: not a fail/null stub, so "usable"."""
+        return self
+
+
+class _FailKeyring:
+    """Mirrors keyring.backends.fail.Keyring, which keyring falls back to."""
+
+
+class _NullKeyring:
+    """Mirrors keyring.backends.null.Keyring."""
+
+
+def _reset_loaded_keychain_cache() -> None:
+    """Clear the cached backend probe, without importing the package ourselves.
+
+    Deliberately lazy: the probe is per-module-instance, so a module that is
+    imported during the test already starts uncached, and importing MARM here
+    for every test in the suite would be a lot of work for a cache reset.
+    """
+    module = sys.modules.get(_KEY_MANAGEMENT_MODULE)
+    if module is not None:
+        module.reset_keychain_cache()
+
+
+def install_memory_keychain(monkeypatch) -> MemoryKeychain:
+    """Make `import keyring` resolve to an in-memory backend for this test."""
+    chain = MemoryKeychain()
+    module = types.ModuleType("keyring")
+    # Reached through the instance on every call, not bound once at install
+    # time: a test that monkeypatches `memory_keychain.set_password` to observe
+    # or drop a write has to actually intercept it.
+    module.get_password = lambda service, username: chain.get_password(
+        service, username
+    )
+    module.set_password = lambda service, username, password: chain.set_password(
+        service, username, password
+    )
+    module.delete_password = lambda service, username: chain.delete_password(
+        service, username
+    )
+    module.get_keyring = lambda: chain.get_keyring()
+
+    backends = types.ModuleType("keyring.backends")
+    fail_module = types.ModuleType("keyring.backends.fail")
+    fail_module.Keyring = _FailKeyring
+    null_module = types.ModuleType("keyring.backends.null")
+    null_module.Keyring = _NullKeyring
+    backends.fail = fail_module
+    backends.null = null_module
+    module.backends = backends
+
+    for name, value in (
+        ("keyring", module),
+        ("keyring.backends", backends),
+        ("keyring.backends.fail", fail_module),
+        ("keyring.backends.null", null_module),
+    ):
+        monkeypatch.setitem(sys.modules, name, value)
+
+    _reset_loaded_keychain_cache()
+    return chain
+
+
+def uninstall_keychain(monkeypatch) -> None:
+    """Make `import keyring` fail, standing in for a machine without the extra.
+
+    A None entry in sys.modules is what CPython uses to mean "this import
+    failed"; `import keyring` then raises ImportError, which is the branch the
+    optional extra takes on a plain `pip install marm-mcp-server`.
+    """
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    _reset_loaded_keychain_cache()
+
+
+@pytest.fixture(autouse=True)
+def memory_keychain(monkeypatch) -> MemoryKeychain:
+    """Hand every test an empty in-memory keychain instead of the real one.
+
+    Empty on purpose: tests written before the keychain existed assert that a
+    missing key makes resolution fall through to `.env`, and that has to stay
+    true. Tests that need a stored key seed this fixture.
+    """
+    return install_memory_keychain(monkeypatch)
 
 
 def load_isolated_server(monkeypatch, tmp_path, api_key="", write_queue_enabled=False):

@@ -64,6 +64,13 @@ marm-mcp-stdio = "marm_mcp_server.server_stdio:main"
 [project.optional-dependencies]
 docker-image = []
 concepts = []
+# Optional, and deliberately not in `dependencies`: a container has no Secret
+# Service, and a headless VPS usually has none either, so keyring would install
+# dbus/jeepney on Linux for a backend that cannot exist. Without this extra MARM
+# keeps using ~/.marm/.env, which is the supported fallback rather than an error.
+keychain = [
+    "keyring>=25.0.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
